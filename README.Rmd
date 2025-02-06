@@ -89,9 +89,19 @@ Once you are done setting up the project, you can now start working with the MET
 
 1. Load the `data.table` (and the `dtplyr` and `dplyr` packages).
 
+```{r warnings=FALSE}
+library(data.table)
+library(dtplyr)
+library(dplyr)
+library(mgcv)
+library(ggplot2)
+library(leaflet)
+library(kableExtra)
+```
+
 2. Load the met data from https://raw.githubusercontent.com/JSC370/JSC370-2024/main/data/met_all_2023.gz, and also the station data. For the latter, you can use the code we used during lecture to pre-process the stations data:
 
-```{r stations-data, eval = FALSE}
+```{r stations-data}
 # Download the data
 stations <- fread("ftp://ftp.ncdc.noaa.gov/pub/data/noaa/isd-history.csv")
 stations[, USAF := as.integer(USAF)]
@@ -112,12 +122,28 @@ stations[, n := 1:.N, by = .(USAF)]
 stations <- stations[n == 1,][, n := NULL]
 
 # Read in the met data
+download.file(
+  "https://raw.githubusercontent.com/JSC370/JSC370-2025/main/data/met/met_all.gz",
+  destfile = "met_all.gz",
+  method   = "curl",
+  timeout  = 60
+  )
+
+met <- data.table::fread("met_all.gz")
 ```
 
 3. Merge the data as we did during the lecture. Use the `merge()` code and you can also try the tidy way with `left_join()`
 
 ```{r}
-
+met <- merge(
+  x     = met,      
+  y     = stations, 
+  by.x  = "USAFID",
+  by.y  = "USAF", 
+  all.x = TRUE,      
+  all.y = FALSE
+  )
+head(met[, list(USAFID, WBAN, STATE)], n = 4)
 ```
 
 
@@ -125,8 +151,40 @@ stations <- stations[n == 1,][, n := NULL]
 
 Across all weather stations, what stations have the median values of temperature, wind speed, and atmospheric pressure? Using the `quantile()` function, identify these three stations. Do they coincide?
 
-```{r}
+```{r medians}
+# median values of temperature, wind speed, and atmospheric pressure
+medians <- met[, .(
+  temp_50 = quantile(temp, probs = .5, na.rm = TRUE),
+  wind.sp_50 = quantile(wind.sp, probs = .5, na.rm = TRUE),
+  atm.press_50 = quantile(atm.press, probs = .5, na.rm = TRUE)
+)]
 
+medians
+```
+```{r station-medians}
+# median values of temperature, wind speed, and atmospheric pressure
+station_med <- met[, .(
+  temp = quantile(temp, probs = .5, na.rm = TRUE),
+  wind.sp = quantile(wind.sp, probs = .5, na.rm = TRUE),
+  atm.press = quantile(atm.press, probs = .5, na.rm = TRUE),
+  lat = mean(lat, na.rm = TRUE),
+  lon = mean(lon, na.rm = TRUE)
+), by=.(USAFID, STATE)]
+
+station_med
+```
+```{r median-diff}
+station_med[ , temp_dist := abs(temp-medians$temp_50)]
+median_temp_station <- station_med[temp_dist == 0]
+median_temp_station
+
+station_med[ , wind.sp_dist := abs(wind.sp-medians$wind.sp_50)]
+median_wind.sp_station <- station_med[wind.sp_dist == 0]
+median_wind.sp_station
+
+station_med[ , atm.press_dist := abs(atm.press-medians$atm.press)]
+median_atm.press_station <- station_med[atm.press_dist == 0]
+median_atm.press_station
 ```
 
 Knit the document, commit your changes, and save it on GitHub. Don't forget to add `README.md` to the tree, the first time you render it.
@@ -136,6 +194,20 @@ Knit the document, commit your changes, and save it on GitHub. Don't forget to a
 Just like the previous question, you are asked to identify what is the most representative, the median, station per state. This time, instead of looking at one variable at a time, look at the euclidean distance. If multiple stations show in the median, select the one located at the lowest latitude.
 
 ```{r}
+station_med[ , temp_50:= quantile(temp, probs = .5, na.rm = TRUE), by = STATE]
+station_med[ , wind.sp_50:= quantile(wind.sp, probs = .5, na.rm = TRUE), by = STATE]
+
+station_med[, eudist := sqrt(
+  (temp-temp_50)^2 + (wind.sp-wind.sp_50)^2
+)]
+
+id_station <- station_med[ , .SD[which.min(eudist)], by = STATE]
+
+id_station <- merge(
+  x = id_station, y = stations,
+  by.x = "USAFID", by.y = "USAF",
+  all.x = TRUE, all.y = FALSE
+)
 
 ```
 
@@ -146,6 +218,44 @@ Knit the doc and save it on GitHub.
 For each state, identify what is the station that is closest to the mid-point of the state. Combining these with the stations you identified in the previous question, use `leaflet()` to visualize all ~100 points in the same figure, applying different colors for those identified in this question.
 
 ```{r}
+# get mid point of the state
+mid_point <- met[, .(
+  lon_50 = quantile(lon, probs = .5, na.rm = TRUE),
+  lat_50 = quantile(lat, probs = .5, na.rm = TRUE)
+), by = STATE]
+
+
+mid <- merge(x = met, y = mid_point, by = "STATE")
+```
+
+```{r}
+# calculate euclidean distance for lon and lat
+mid[, mid_eudist := sqrt(
+  (lon-lon_50)^2 + (lat-lat_50)^2
+)]
+
+# find closest station to mid-point of state
+
+mid_station <- mid[, .SD[which.min(mid_eudist)], by = STATE]
+```
+
+```{r}
+#id_station <- merge(x = id_station, y = )
+
+# visualiztion
+
+leaflet() %>%
+  addProviderTiles('CartoDB.Positron') %>%
+  addCircles(
+    data = mid_station,
+    lat = ~lat, lng = ~lon, popup = "geographic mid station",
+    opacity = 1, fillOpacity = 1, radius = 400, color = "blue"
+  ) %>%
+  addCircles(
+    data = id_station,
+    lat = ~lat, lng = ~lon, popup = "eudist mid station",
+    opacity = 1, fillOpacity = 1, radius = 400, color = "magenta"
+  )
 
 ```
 
@@ -162,7 +272,9 @@ Start by computing the states' average temperature. Use that measurement to clas
 - High: temp >= 25
 
 ```{r}
-
+met[, elev_cat := fifelse(
+  elev < 90, "low-elev", "high-elev"
+)]
 ```
 
 Once you are done with that, you can compute the following:
@@ -176,8 +288,17 @@ Once you are done with that, you can compute the following:
 All by the levels described before.
 
 ```{r}
+library(tidyr)
+summary_table <- met |>
+  group_by(STATE, elev_cat) |>
+  summarize(temp_mean = mean(temp, na.rm=T)) |>
+  pivot_wider(names_from = elev_cat, values_from = temp_mean)
 
+kable(summary_table, booktabs = TRUE) %>%
+  kable_styling(font_size = 10) %>%
+  kable_paper("hover", full_width = F)
 ```
+
 
 Knit the document, commit your changes, and push them to GitHub. 
 
@@ -191,5 +312,32 @@ Let's practice running regression models with smooth functions on X. We need the
 - fit both a linear model and a spline model (use `gam()` with a cubic regression spline on wind speed). Summarize and plot the results from the models and interpret which model is the best fit and why.
 
 ```{r}
+station_med_lt <- lazy_dt(station_med)
+station_med_lt <- station_med_lt |>
+  filter(between(atm.press, 1000, 1020)) |>
+  collect()
 
+ggplot(station_med_lt, aes(x=atm.press, y=temp)) +
+  geom_point() + 
+  geom_smooth(method = "lm", col = 'cyan') +
+  geom_smooth(method = "gam", col = 'blue')
 ```
+
+```{r}
+lm_mod <- lm(temp~atm.press, data=station_med_lt)
+summary(lm_mod)
+
+gam_mod <- gam(temp ~ s(atm.press, bs="cr", k = 20), data=station_med_lt)
+summary(gam_mod)
+plot(gam_mod)
+```
+
+
+
+
+
+
+
+
+
+
